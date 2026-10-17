@@ -21,6 +21,11 @@ fn today() -> String {
     day_before(0)
 }
 
+/// The D1 binding is DB here; the live site's config calls it VISITS, so either works.
+fn db_of(env: &Env) -> Result<D1Database> {
+    env.d1("DB").or_else(|_| env.d1("VISITS"))
+}
+
 fn s(v: &str) -> JsValue {
     JsValue::from_str(v)
 }
@@ -65,7 +70,7 @@ async fn beacon(mut req: Request, env: &Env) -> Result<Response> {
     };
     let ref_tag = classify::ref_tag(body["ref"].as_str().unwrap_or(""));
     let referrer_host = classify::referrer_host(body["referrer"].as_str().unwrap_or(""), &OWN_HOSTS);
-    env.d1("DB")?
+    db_of(&env)?
         .prepare("INSERT INTO visits (day, path, ref, referrer_host, n) VALUES (?1,?2,?3,?4,1) ON CONFLICT (day, path, ref, referrer_host) DO UPDATE SET n = n + 1")
         .bind(&[s(&today()), s(&path), s(&ref_tag), s(&referrer_host)])?
         .run()
@@ -88,7 +93,7 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
         return Response::error("send the read token as: Authorization: Bearer <token>", 401);
     }
     let q = |k: &str| url.query_pairs().find(|(a, _)| a == k).map(|(_, v)| v.to_string());
-    let db = env.d1("DB")?;
+    let db = db_of(&env)?;
     match url.path() {
         "/api/v1/counts" => {
             let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
@@ -147,7 +152,7 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if let Some(hit) = hit {
         // only a served file counts: a 404 is not a visit
         if resp.status_code() == 200 {
-            let db = env.d1("DB")?;
+            let db = db_of(&env)?;
             ctx.wait_until(async move {
                 if let Err(e) = record(&db, &hit).await {
                     console_error!("kokumi: dropped a hit ({}): {e}", hit.path);
