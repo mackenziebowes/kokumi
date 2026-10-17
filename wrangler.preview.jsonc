@@ -1,0 +1,18 @@
+{
+  // A workers.dev preview: Kokumi in front of the preview build of the site. Never the domain.
+  // Deploy: PATH=~/.local/share/rust-official/bin:$PATH wrangler deploy --config wrangler.preview.jsonc
+  "name": "kokumi-preview",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "build": { "command": "worker-build --release" },
+  "assets": {
+    "directory": "../../products/mbsi/personal-site/.deploy/preview",
+    "not_found_handling": "404-page",
+    "binding": "ASSETS",
+    // Code runs for pages, markdown twins, llms.txt and the two API routes; images, fonts and scripts stay plain static files.
+    "run_worker_first": ["/*", "!/images/*", "!/fonts/*", "!/figures/*", "!/og/*", "!/*.js", "!/*.css", "!/*.svg", "!/*.png", "!/*.webmanifest"]
+  },
+  "d1_databases": [{ "binding": "DB", "database_name": "personal-site-visits-preview", "database_id": "55c57269-51dc-49f9-96d8-6cd8118695d7" }]
+}
