@@ -51,7 +51,9 @@ fn hit_of(req: &Request, url: &Url, kind: PageKind) -> Hit {
         Caller::Agent { operator, product, .. } => (operator.name().to_string(), product.name().to_string()),
         _ => (String::new(), String::new()),
     };
-    let ref_tag = url.query_pairs().find(|(k, _)| k == "ref").map(|(_, v)| classify::ref_tag(&v)).unwrap_or_default();
+    // ?ref= is ours; utm_source= is how ChatGPT and most others tag a link (utm_source=chatgpt.com).
+    let tag_of = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| classify::ref_tag(&v)).filter(|t| !t.is_empty());
+    let ref_tag = tag_of("ref").or_else(|| tag_of("utm_source")).unwrap_or_default();
     let referrer_host = req.headers().get("referer").ok().flatten().map(|r| classify::referrer_host(&r, &OWN_HOSTS)).unwrap_or_default();
     Hit { day: today(), path: url.path().chars().take(200).collect(), kind, ref_tag, referrer_host, audience: classify::audience(&caller), operator, product }
 }

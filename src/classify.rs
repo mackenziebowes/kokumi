@@ -102,7 +102,8 @@ pub fn kind_of(path: &str) -> Option<PageKind> {
 }
 
 pub fn ref_tag(raw: &str) -> String {
-    let r = raw.to_ascii_lowercase();
+    // dots become dashes, so utm_source=chatgpt.com is kept as "chatgpt-com"
+    let r = raw.to_ascii_lowercase().replace('.', "-");
     let ok = !r.is_empty() && r.len() <= 40 && r.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if ok { r } else { String::new() }
