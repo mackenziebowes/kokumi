@@ -106,10 +106,14 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
             let beacon = db
                 .prepare("SELECT path, ref, referrer_host, SUM(n) AS n FROM visits WHERE day >= ?1 GROUP BY path, ref, referrer_host ORDER BY n DESC")
                 .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
+            // The same reports with the day kept, so a reader can say how many people came on a day.
+            let beacon_by_day = db
+                .prepare("SELECT day, path, ref, referrer_host, n FROM visits WHERE day >= ?1 ORDER BY day DESC, n DESC")
+                .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
             Response::from_json(&serde_json::json!({
                 "from": from,
-                "note": "edge: every counted request, by who asked (audience). beacon: pages whose JavaScript ran, so a person; a person is also in edge as unconfirmed-browser",
-                "edge": edge, "beacon": beacon
+                "note": "edge: every counted request, by who asked (audience). beacon: pages whose JavaScript ran, so a person; a person is also in edge as unconfirmed-browser. beacon_by_day: the same reports, one row per day",
+                "edge": edge, "beacon": beacon, "beacon_by_day": beacon_by_day
             }))
         }
         "/api/v1/hits" => {
