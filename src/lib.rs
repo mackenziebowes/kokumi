@@ -10,7 +10,12 @@ use types::*;
 use worker::wasm_bindgen::JsValue;
 use worker::*;
 
-const OWN_HOSTS: [&str; 2] = ["mackenziebowes.com", "www.mackenziebowes.com"];
+// A referrer on the host this Worker serves (with or without www.) is an internal click; any other site,
+// including our other sites, is a referral. One Worker serves one site, so no host list is needed.
+fn own_host(url: &Url) -> String {
+    let h = url.host_str().unwrap_or("").to_ascii_lowercase();
+    h.strip_prefix("www.").unwrap_or(&h).to_string()
+}
 
 fn book() -> &'static ranges::Book {
     static BOOK: OnceLock<ranges::Book> = OnceLock::new();
@@ -54,7 +59,7 @@ fn hit_of(req: &Request, url: &Url, kind: PageKind) -> Hit {
     // ?ref= is ours; utm_source= is how ChatGPT and most others tag a link (utm_source=chatgpt.com).
     let tag_of = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| classify::ref_tag(&v)).filter(|t| !t.is_empty());
     let ref_tag = tag_of("ref").or_else(|| tag_of("utm_source")).unwrap_or_default();
-    let referrer_host = req.headers().get("referer").ok().flatten().map(|r| classify::referrer_host(&r, &OWN_HOSTS)).unwrap_or_default();
+    let referrer_host = req.headers().get("referer").ok().flatten().map(|r| classify::referrer_host(&r, &[own_host(url).as_str()])).unwrap_or_default();
     Hit { day: today(), path: url.path().chars().take(200).collect(), kind, ref_tag, referrer_host, audience: classify::audience(&caller), operator, product }
 }
 
@@ -71,7 +76,8 @@ async fn beacon(mut req: Request, env: &Env) -> Result<Response> {
         _ => return Ok(Response::empty()?.with_status(204)),
     };
     let ref_tag = classify::ref_tag(body["ref"].as_str().unwrap_or(""));
-    let referrer_host = classify::referrer_host(body["referrer"].as_str().unwrap_or(""), &OWN_HOSTS);
+    let own = req.url().map(|u| own_host(&u)).unwrap_or_default();
+    let referrer_host = classify::referrer_host(body["referrer"].as_str().unwrap_or(""), &[own.as_str()]);
     db_of(&env)?
         .prepare("INSERT INTO visits (day, path, ref, referrer_host, n) VALUES (?1,?2,?3,?4,1) ON CONFLICT (day, path, ref, referrer_host) DO UPDATE SET n = n + 1")
         .bind(&[s(&today()), s(&path), s(&ref_tag), s(&referrer_host)])?
