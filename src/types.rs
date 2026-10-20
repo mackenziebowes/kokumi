@@ -125,3 +125,48 @@ pub struct Hit {
     pub operator: String,
     pub product: String,
 }
+
+// ---------- slice 2: who viewed, how far they read, what they clicked (design #1508 rev 6) ----------
+
+/// Visitors whose data protection law needs consent for this: EU, EEA and UK. They are counted, never keyed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Visitor {
+    /// The IP is kept, with a key for the device: sha256(salt, ip, user agent), so one IP with two browsers is two visitors.
+    Keyed { ip: String, key: String, place: Place },
+    Anonymous { country: String },
+}
+
+/// What Cloudflare says about the IP, at no cost: no third-party lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub country: String,
+    pub region: String,
+    pub city: String,
+    pub asn: u32,
+    pub network: String, // the AS organisation: an ISP, a company, or a cloud
+}
+
+/// What the page script sends. The view id is random per page load, held only in the page's memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageEvent {
+    Viewed { view: String, path: String, ref_tag: String, referrer_host: String, screen: String, language: String },
+    /// Sent each time the page is hidden; the totals so far, so the server keeps the largest.
+    Engaged { view: String, visible_ms: u32, deepest_scroll: u8 },
+    Clicked { view: String, target: Target },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Email,
+    Outbound { host: String },
+    Internal { path: String },
+}
+impl Target {
+    pub fn parts(&self) -> (&'static str, &str) {
+        match self {
+            Target::Email => ("email", ""),
+            Target::Outbound { host } => ("outbound", host),
+            Target::Internal { path } => ("internal", path),
+        }
+    }
+}
