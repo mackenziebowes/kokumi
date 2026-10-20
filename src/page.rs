@@ -1,4 +1,5 @@
-//! The page script's reports (/api/hit, /api/engaged, /api/click): a view keyed by IP, how long and how far it was read, what was clicked.
+//! The page script's reports (/api/hit, /api/engaged, /api/events): a view keyed by IP, how long and how far it was read,
+//! and every component it showed and what was done with each.
 use crate::types::*;
 use crate::{classify, db_of, own_host, s, today};
 use worker::wasm_bindgen::JsValue;
@@ -67,14 +68,19 @@ pub async fn page_event(mut req: Request, env: &Env, route: &str) -> Result<Resp
             deepest_scroll: body["deepest_scroll"].as_u64().unwrap_or(0).min(100) as u8,
         },
         _ => {
-            let t = &body["target"];
-            let target = match t["kind"].as_str() {
-                Some("email") => Target::Email,
-                Some("outbound") => Target::Outbound { host: text(t, "host", 100) },
-                Some("internal") => Target::Internal { path: text(t, "path", 200) },
-                _ => return Ok(Response::empty()?.with_status(204)),
-            };
-            PageEvent::Clicked { view, target }
+            let path = text(&body, "path", 200);
+            let events: Vec<ComponentEvent> = body["events"].as_array().cloned().unwrap_or_default().iter().take(300).filter_map(|e| {
+                let ms = e["ms"].as_u64().unwrap_or(0).min(86_400_000) as u32;
+                Some(ComponentEvent {
+                    component: text(e, "c", 160),
+                    area: text(e, "a", 20),
+                    section: text(e, "s", 100),
+                    interaction: Interaction::parse(e["k"].as_str()?, ms)?,
+                    n: e["n"].as_u64().unwrap_or(1).min(1000) as u32,
+                })
+            }).filter(|e| !e.component.is_empty() && (e.n > 0 || e.interaction.parts().1 > 0)).collect();
+            if events.is_empty() || view.is_empty() { return Ok(Response::empty()?.with_status(204)); }
+            PageEvent::Components { view, path, events }
         }
     };
     let db = db_of(env)?;
@@ -101,10 +107,16 @@ async fn store_page_event(db: &D1Database, e: &PageEvent, v: &Visitor) -> Result
             db.prepare("UPDATE views SET visible_ms = MAX(visible_ms, ?2), deepest_scroll = MAX(deepest_scroll, ?3) WHERE view = ?1")
                 .bind(&[s(view), JsValue::from_f64(*visible_ms as f64), JsValue::from_f64(*deepest_scroll as f64)])?.run().await?;
         }
-        PageEvent::Clicked { view, target } => {
-            let (kind, value) = target.parts();
-            db.prepare("INSERT INTO clicks (view, at, kind, target) VALUES (?1,?2,?3,?4)")
-                .bind(&[s(view), at, s(kind), s(value)])?.run().await?;
+        PageEvent::Components { view, path, events } => {
+            let day = today();
+            let statements: Vec<D1PreparedStatement> = events.iter().filter_map(|e| {
+                let (kind, ms) = e.interaction.parts();
+                db.prepare("INSERT INTO component_events (view, day, path, component, area, section, kind, n, ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
+                            ON CONFLICT (view, component, area, section, kind) DO UPDATE SET n = n + excluded.n, ms = ms + excluded.ms")
+                    .bind(&[s(view), s(&day), s(path), s(&e.component), s(&e.area), s(&e.section), s(kind), JsValue::from_f64(e.n as f64), JsValue::from_f64(ms as f64)])
+                    .ok()
+            }).collect();
+            db.batch(statements).await?;
         }
     }
     Ok(())

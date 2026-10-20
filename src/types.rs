@@ -152,21 +152,56 @@ pub enum PageEvent {
     Viewed { view: String, path: String, ref_tag: String, referrer_host: String, screen: String, language: String },
     /// Sent each time the page is hidden; the totals so far, so the server keeps the largest.
     Engaged { view: String, visible_ms: u32, deepest_scroll: u8 },
-    Clicked { view: String, target: Target },
+    /// Component reports since the last batch: deltas, so the server adds them.
+    Components { view: String, path: String, events: Vec<ComponentEvent> },
 }
 
+/// One component on one page view. `component` is named from the page itself (figure:<name>,
+/// link:<path|#anchor|host>, toggle:<name>, section:<id>, button:<text>, form:<id>, code:<section>#n,
+/// image:<file>), or from data-track="<name>" where the page sets one. `area` is where on the page it sits
+/// (header, toc, article, article-foot, footer, page); `section` is the nearest heading above it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Target {
-    Email,
-    Outbound { host: String },
-    Internal { path: String },
+pub struct ComponentEvent {
+    pub component: String,
+    pub area: String,
+    pub section: String,
+    pub interaction: Interaction,
+    pub n: u32,
 }
-impl Target {
-    pub fn parts(&self) -> (&'static str, &str) {
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interaction {
+    /// At least half of it was on screen for a second (a heading: on screen at all); `ms` is time in view.
+    Seen { ms: u32 },
+    Clicked,
+    Opened,
+    Closed,
+    Played,
+    Copied,
+    Submitted,
+}
+impl Interaction {
+    pub fn parse(kind: &str, ms: u32) -> Option<Interaction> {
+        Some(match kind {
+            "seen" => Interaction::Seen { ms },
+            "clicked" => Interaction::Clicked,
+            "opened" => Interaction::Opened,
+            "closed" => Interaction::Closed,
+            "played" => Interaction::Played,
+            "copied" => Interaction::Copied,
+            "submitted" => Interaction::Submitted,
+            _ => return None,
+        })
+    }
+    pub fn parts(self) -> (&'static str, u32) {
         match self {
-            Target::Email => ("email", ""),
-            Target::Outbound { host } => ("outbound", host),
-            Target::Internal { path } => ("internal", path),
+            Interaction::Seen { ms } => ("seen", ms),
+            Interaction::Clicked => ("clicked", 0),
+            Interaction::Opened => ("opened", 0),
+            Interaction::Closed => ("closed", 0),
+            Interaction::Played => ("played", 0),
+            Interaction::Copied => ("copied", 0),
+            Interaction::Submitted => ("submitted", 0),
         }
     }
 }

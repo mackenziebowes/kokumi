@@ -113,11 +113,22 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
             let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
             let from = day_before(days - 1);
             let views = db
-                .prepare("SELECT v.*, (SELECT json_group_array(json_object('kind', c.kind, 'target', c.target, 'at', c.at)) FROM clicks c WHERE c.view = v.view) AS clicks FROM views v WHERE v.day >= ?1 ORDER BY v.at DESC LIMIT 5000")
+                .prepare("SELECT * FROM views WHERE day >= ?1 ORDER BY at DESC LIMIT 5000")
                 .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
             Response::from_json(&serde_json::json!({ "from": from, "note": "one row per page view whose script ran; ip, visitor and place are empty for EU, EEA and UK visitors; visitor = sha256(salt, ip, user agent)", "views": views }))
         }
-        _ => Response::error("not found: /api/v1/counts?days=7, /api/v1/hits?limit=100 or /api/v1/views?days=7", 404),
+        "/api/v1/components" => {
+            // per component: views that showed it, views that acted on it, and the counts, so seen 900 / clicked 9 reads off one row
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let from = day_before(days - 1);
+            let path = q("path").unwrap_or_default();
+            let rows = db
+                .prepare("SELECT path, component, area, section, kind, COUNT(DISTINCT view) AS views, SUM(n) AS n, SUM(ms) AS ms FROM component_events \
+                          WHERE day >= ?1 AND (?2 = '' OR path = ?2) GROUP BY path, component, area, section, kind ORDER BY path, component, kind")
+                .bind(&[s(&from), s(&path)])?.all().await?.results::<serde_json::Value>()?;
+            Response::from_json(&serde_json::json!({ "from": from, "note": "views: page views with that event on that component; n: how many times; ms: total time in view (seen only)", "components": rows }))
+        }
+        _ => Response::error("not found: /api/v1/counts, /api/v1/hits, /api/v1/views or /api/v1/components (?days=7, &path=)", 404),
     }
 }
 
@@ -125,7 +136,7 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
 pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let url = req.url()?;
     let path = url.path().to_string();
-    if matches!(path.as_str(), "/api/hit" | "/api/engaged" | "/api/click") {
+    if matches!(path.as_str(), "/api/hit" | "/api/engaged" | "/api/events") {
         return page::page_event(req, &env, &path).await;
     }
     if path.starts_with("/api/v1/") {

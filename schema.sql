@@ -22,5 +22,10 @@ CREATE TABLE IF NOT EXISTS views (
 );
 CREATE INDEX IF NOT EXISTS views_day ON views (day);
 CREATE INDEX IF NOT EXISTS views_visitor ON views (visitor);
-CREATE TABLE IF NOT EXISTS clicks (view TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS clicks_view ON clicks (view);
+-- Every component a view showed, and what was done with it (seen, clicked, opened, closed, played, copied, submitted).
+CREATE TABLE IF NOT EXISTS component_events (
+  view TEXT NOT NULL, day TEXT NOT NULL, path TEXT NOT NULL, component TEXT NOT NULL, area TEXT NOT NULL, section TEXT NOT NULL,
+  kind TEXT NOT NULL, n INTEGER NOT NULL, ms INTEGER NOT NULL,
+  PRIMARY KEY (view, component, area, section, kind)
+);
+CREATE INDEX IF NOT EXISTS component_events_day ON component_events (day, path);
