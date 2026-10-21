@@ -29,3 +29,14 @@ CREATE TABLE IF NOT EXISTS component_events (
   PRIMARY KEY (view, component, area, section, kind)
 );
 CREATE INDEX IF NOT EXISTS component_events_day ON component_events (day, path);
+
+-- Tools (#2117): one row per call to a tool Worker behind Kokumi, written at the edge from what the tool reports in
+-- x-tool-outcome. input is the public website name the visitor typed (disclosed on /privacy); bad input is stored as ''.
+-- visitor is the same key as views.visitor, NULL for EU, EEA and UK visitors; no IP is stored here.
+CREATE TABLE IF NOT EXISTS tool_events (
+  day TEXT NOT NULL, at INTEGER NOT NULL, tool TEXT NOT NULL, input TEXT NOT NULL,
+  outcome TEXT NOT NULL, verdict TEXT NOT NULL, turnstile TEXT NOT NULL,
+  audience TEXT NOT NULL, operator TEXT NOT NULL, product TEXT NOT NULL,
+  visitor TEXT, country TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_events_day ON tool_events (day, tool);

@@ -6,7 +6,7 @@ use worker::wasm_bindgen::JsValue;
 use worker::*;
 
 /// EU, EEA and UK visitors are counted without their IP or a device key (design #1508 rev 6, assumption 4).
-fn visitor_of(req: &Request, salt: &str) -> Visitor {
+pub(crate) fn visitor_of(req: &Request, salt: &str) -> Visitor {
     // read request.cf field by field: the crate's accessors unwrap and can abort the Worker
     let cf = worker::js_sys::Reflect::get(req.inner(), &s("cf")).unwrap_or(JsValue::UNDEFINED);
     let field = |k: &str| worker::js_sys::Reflect::get(&cf, &s(k)).ok().filter(|v| !v.is_undefined() && !v.is_null());

@@ -4,6 +4,7 @@ mod classify;
 mod days;
 mod page;
 mod ranges;
+mod tool;
 mod types;
 
 use std::net::IpAddr;
@@ -128,7 +129,22 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
                 .bind(&[s(&from), s(&path)])?.all().await?.results::<serde_json::Value>()?;
             Response::from_json(&serde_json::json!({ "from": from, "note": "views: page views with that event on that component; n: how many times; ms: total time in view (seen only)", "components": rows }))
         }
-        _ => Response::error("not found: /api/v1/counts, /api/v1/hits, /api/v1/views or /api/v1/components (?days=7, &path=)", 404),
+        "/api/v1/tools" => {
+            // one row per tool call, grouped; and the public site names that came back below the fix, for the people who look at them
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let from = day_before(days - 1);
+            let tool = q("tool").unwrap_or_default();
+            let calls = db
+                .prepare("SELECT tool, day, verdict, outcome, turnstile, audience, COUNT(*) AS n FROM tool_events WHERE day >= ?1 AND (?2 = '' OR tool = ?2) \
+                          GROUP BY tool, day, verdict, outcome, turnstile, audience ORDER BY day DESC, tool, n DESC")
+                .bind(&[s(&from), s(&tool)])?.all().await?.results::<serde_json::Value>()?;
+            let below_fix = db
+                .prepare("SELECT tool, input, COUNT(*) AS checks, MAX(at) AS last_at FROM tool_events WHERE day >= ?1 AND (?2 = '' OR tool = ?2) AND verdict = 'below_fix' AND input != '' \
+                          GROUP BY tool, input ORDER BY last_at DESC LIMIT 500")
+                .bind(&[s(&from), s(&tool)])?.all().await?.results::<serde_json::Value>()?;
+            Response::from_json(&serde_json::json!({ "from": from, "note": "calls: tool calls by verdict, what the checked site returned (outcome), the Turnstile result and who called; below_fix: public site names the tool found below the fix", "calls": calls, "below_fix": below_fix }))
+        }
+        _ => Response::error("not found: /api/v1/counts, /api/v1/hits, /api/v1/views, /api/v1/components or /api/v1/tools (?days=7, &path=, &tool=)", 404),
     }
 }
 
@@ -138,6 +154,9 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let path = url.path().to_string();
     if matches!(path.as_str(), "/api/hit" | "/api/engaged" | "/api/events") {
         return page::page_event(req, &env, &path).await;
+    }
+    if let Some(tool) = tool::route_of(&path) {
+        return tool::forward(req, &env, &ctx, tool).await;
     }
     if path.starts_with("/api/v1/") {
         return read_api(&req, &url, &env).await;
