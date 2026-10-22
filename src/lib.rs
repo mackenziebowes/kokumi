@@ -125,14 +125,19 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
         }
         "/api/v1/components" => {
             // per component: views that showed it, views that acted on it, and the counts, so seen 900 / clicked 9 reads off one row
+            // ?day=YYYY-MM-DD gives that one Vancouver day (pagebook's daily pull, #2185); otherwise the last `days` days summed.
             let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
-            let from = day_before(days - 1);
+            let one_day = q("day").unwrap_or_default();
+            if !one_day.is_empty() && !(one_day.len() == 10 && one_day.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() })) {
+                return Response::error("day must be YYYY-MM-DD", 400);
+            }
+            let from = if one_day.is_empty() { day_before(days - 1) } else { one_day.clone() };
             let path = q("path").unwrap_or_default();
             let rows = db
-                .prepare("SELECT path, component, area, section, kind, COUNT(DISTINCT view) AS views, SUM(n) AS n, SUM(ms) AS ms FROM component_events \
-                          WHERE day >= ?1 AND (?2 = '' OR path = ?2) GROUP BY path, component, area, section, kind ORDER BY path, component, kind")
-                .bind(&[s(&from), s(&path)])?.all().await?.results::<serde_json::Value>()?;
-            Response::from_json(&serde_json::json!({ "from": from, "note": "views: page views with that event on that component; n: how many times; ms: total time in view (seen only)", "components": rows }))
+                .prepare("SELECT ?3 AS day, path, component, area, section, kind, COUNT(DISTINCT view) AS views, SUM(n) AS n, SUM(ms) AS ms FROM component_events \
+                          WHERE (CASE WHEN ?3 = '' THEN day >= ?1 ELSE day = ?3 END) AND (?2 = '' OR path = ?2) GROUP BY path, component, area, section, kind ORDER BY path, component, kind")
+                .bind(&[s(&from), s(&path), s(&one_day)])?.all().await?.results::<serde_json::Value>()?;
+            Response::from_json(&serde_json::json!({ "from": from, "day": one_day, "note": "views: page views with that event on that component; n: how many times; ms: total time in view (seen only); day: the one day asked for, or empty for the summed range", "components": rows }))
         }
         "/api/v1/tools" => {
             // one row per tool call, grouped; and the public site names that came back below the fix, for the people who look at them
