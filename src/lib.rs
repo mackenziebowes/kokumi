@@ -104,11 +104,16 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
             }))
         }
         "/api/v1/hits" => {
-            let limit: i64 = q("limit").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 1000);
+            // ?days=N gives every row from that many days back, so a reader sees whole days; a 1,000-row cap alone
+            // hid everything older than ~3 days on mackenziebowes.com (2026-10-22). Without days: the newest rows, as before.
+            let days: Option<i64> = q("days").and_then(|v| v.parse().ok()).map(|d: i64| d.clamp(1, 365));
+            let limit: i64 = q("limit").and_then(|v| v.parse().ok()).unwrap_or(if days.is_some() { 50_000 } else { 100 }).clamp(1, 50_000);
+            let from = days.map_or_else(|| "0000-00-00".to_string(), |d| day_before(d - 1));
             let rows = db
-                .prepare("SELECT day, path, kind, ref, referrer_host, audience, operator, product, n FROM hits ORDER BY day DESC, n DESC LIMIT ?1")
-                .bind(&[JsValue::from_f64(limit as f64)])?.all().await?.results::<serde_json::Value>()?;
-            Response::from_json(&serde_json::json!({ "hits": rows }))
+                .prepare("SELECT day, path, kind, ref, referrer_host, audience, operator, product, n FROM hits WHERE day >= ?1 ORDER BY day DESC, n DESC LIMIT ?2")
+                .bind(&[s(&from), JsValue::from_f64(limit as f64)])?.all().await?.results::<serde_json::Value>()?;
+            let truncated = rows.len() as i64 == limit;
+            Response::from_json(&serde_json::json!({ "from": from, "truncated": truncated, "hits": rows }))
         }
         "/api/v1/views" => {
             let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
