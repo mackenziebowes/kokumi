@@ -158,6 +158,27 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
     }
 }
 
+/// /projects and /projects/* go to the PROJECTS Worker (#3086), which fills the page from the feed and answers the
+/// static page itself when the feed is slow. Only if the binding is missing or errors does this serve the static asset.
+fn is_projects(path: &str) -> bool {
+    path == "/projects" || path.starts_with("/projects/")
+}
+
+async fn serve(req: Request, env: &Env, path: &str) -> Result<Response> {
+    if is_projects(path) && req.method() == Method::Get {
+        if let Ok(svc) = env.service("PROJECTS") {
+            match req.clone().and_then(|r| Ok(r)) {
+                Ok(copy) => match svc.fetch_request(copy).await {
+                    Ok(resp) => return Ok(resp),
+                    Err(e) => console_error!("kokumi: PROJECTS failed on {path}, serving the static page: {e}"),
+                },
+                Err(e) => console_error!("kokumi: could not copy the request for PROJECTS: {e}"),
+            }
+        }
+    }
+    env.assets("ASSETS")?.fetch_request(req).await
+}
+
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let url = req.url()?;
@@ -173,7 +194,7 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     let counted = if req.method() == Method::Get { classify::kind_of(&path) } else { None };
     let hit = counted.map(|kind| hit_of(&req, &url, kind));
-    let resp = env.assets("ASSETS")?.fetch_request(req).await?;
+    let resp = serve(req, &env, &path).await?;
     if let Some(hit) = hit {
         // only a served file counts: a 404 is not a visit
         if resp.status_code() == 200 {
