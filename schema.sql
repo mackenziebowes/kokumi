@@ -6,6 +6,13 @@ CREATE TABLE IF NOT EXISTS hits (
   n INTEGER NOT NULL,
   PRIMARY KEY (day, path, kind, ref, referrer_host, audience, operator, product)
 );
+-- Internal clicks (#4286): a counted page request whose Referer is a page of this same site. One row per day, page and
+-- the page it came from (a path on our own site: no query, no fragment, no host). Nothing about the person.
+CREATE TABLE IF NOT EXISTS internal_hits (
+  day TEXT NOT NULL, path TEXT NOT NULL, from_path TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  PRIMARY KEY (day, path, from_path)
+);
 -- Pane's table (JS beacon), kept as it is so the existing rows stay readable.
 CREATE TABLE IF NOT EXISTS visits (
   day TEXT NOT NULL, path TEXT NOT NULL, ref TEXT NOT NULL, referrer_host TEXT NOT NULL,

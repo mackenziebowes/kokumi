@@ -109,6 +109,20 @@ pub fn ref_tag(raw: &str) -> String {
     if ok { r } else { String::new() }
 }
 
+/// The path of a Referer on our own site (with or without www.): no host, no query, no fragment, at most 200
+/// characters and only printable ASCII; empty for any other site or anything unreadable.
+pub fn referrer_path(referer: &str, own_hosts: &[&str]) -> String {
+    let rest = referer.split_once("://").map(|(_, r)| r).unwrap_or("");
+    let (host_port, tail) = rest.split_once('/').map(|(h, t)| (h, format!("/{t}"))).unwrap_or((rest, String::new()));
+    let host = host_port.split(':').next().unwrap_or("").to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    if host.is_empty() || !own_hosts.contains(&host) {
+        return String::new();
+    }
+    let path: String = tail.split(['?', '#']).next().unwrap_or("").chars().take(200).collect();
+    if path.starts_with('/') && path.chars().all(|c| c.is_ascii_graphic()) { path } else { String::new() }
+}
+
 /// Host of the Referer header, without "www.", and empty for our own site or anything unreadable.
 pub fn referrer_host(referer: &str, own_hosts: &[&str]) -> String {
     let rest = referer.split_once("://").map(|(_, r)| r).unwrap_or("");

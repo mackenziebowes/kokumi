@@ -121,6 +121,8 @@ pub struct Hit {
     pub kind: PageKind,
     pub ref_tag: String,
     pub referrer_host: String,
+    /// The page of this site the request came from, when the Referer is one of ours; else empty.
+    pub referrer_path: String,
     pub audience: Audience,
     pub operator: String,
     pub product: String,

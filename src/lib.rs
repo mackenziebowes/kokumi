@@ -48,6 +48,12 @@ async fn record(db: &D1Database, h: &Hit) -> Result<()> {
     .bind(&[s(&h.day), s(&h.path), s(h.kind.name()), s(&h.ref_tag), s(&h.referrer_host), s(h.audience.name()), s(&h.operator), s(&h.product)])?
     .run()
     .await?;
+    if !h.referrer_path.is_empty() {
+        db.prepare("INSERT INTO internal_hits (day, path, from_path, n) VALUES (?1,?2,?3,1) ON CONFLICT (day, path, from_path) DO UPDATE SET n = n + 1")
+            .bind(&[s(&h.day), s(&h.path), s(&h.referrer_path)])?
+            .run()
+            .await?;
+    }
     Ok(())
 }
 
@@ -64,7 +70,11 @@ fn hit_of(req: &Request, url: &Url, kind: PageKind) -> Hit {
     let tag_of = |key: &str| url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| classify::ref_tag(&v)).filter(|t| !t.is_empty());
     let ref_tag = tag_of("ref").or_else(|| tag_of("utm_source")).unwrap_or_default();
     let referrer_host = req.headers().get("referer").ok().flatten().map(|r| classify::referrer_host(&r, &[own_host(url).as_str()])).unwrap_or_default();
-    Hit { day: today(), path: url.path().chars().take(200).collect(), kind, ref_tag, referrer_host, audience: classify::audience(&caller), operator, product }
+    let referrer_path = match kind {
+        PageKind::Page => req.headers().get("referer").ok().flatten().map(|r| classify::referrer_path(&r, &[own_host(url).as_str()])).unwrap_or_default(),
+        _ => String::new(),
+    };
+    Hit { day: today(), path: url.path().chars().take(200).collect(), kind, ref_tag, referrer_host, referrer_path, audience: classify::audience(&caller), operator, product }
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -115,6 +125,16 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
             let truncated = rows.len() as i64 == limit;
             Response::from_json(&serde_json::json!({ "from": from, "truncated": truncated, "hits": rows }))
         }
+        "/api/v1/internal" => {
+            // ?days=N: which page of this site sent people to which, a row per day (Vancouver days), page and source page.
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let from = day_before(days - 1);
+            let rows = db
+                .prepare("SELECT day, path, from_path, n FROM internal_hits WHERE day >= ?1 ORDER BY day DESC, n DESC LIMIT 50000")
+                .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
+            let truncated = rows.len() == 50_000;
+            Response::from_json(&serde_json::json!({ "from": from, "truncated": truncated, "internal": rows, "note": "a counted page request whose Referer was another page of this site: the page it came from, no query, no person" }))
+        }
         "/api/v1/views" => {
             let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
             let from = day_before(days - 1);
@@ -154,7 +174,7 @@ async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
                 .bind(&[s(&from), s(&tool)])?.all().await?.results::<serde_json::Value>()?;
             Response::from_json(&serde_json::json!({ "from": from, "note": "calls: tool calls by verdict, what the checked site returned (outcome), the Turnstile result and who called; below_fix: public site names the tool found below the fix", "calls": calls, "below_fix": below_fix }))
         }
-        _ => Response::error("not found: /api/v1/counts, /api/v1/hits, /api/v1/views, /api/v1/components or /api/v1/tools (?days=7, &path=, &tool=)", 404),
+        _ => Response::error("not found: /api/v1/counts, /api/v1/hits, /api/v1/internal, /api/v1/views, /api/v1/components or /api/v1/tools (?days=7, &path=, &tool=)", 404),
     }
 }
 
