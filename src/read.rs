@@ -1,0 +1,134 @@
+//! The read API: bearer-token reads of what Kokumi holds, one route per report (counts, hits, internal,
+//! views, links, components, tools). pagebook pulls these daily.
+
+use crate::days::day_before;
+use crate::{db_of, s};
+use worker::wasm_bindgen::JsValue;
+use worker::*;
+
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// `?day=`: empty when absent, the day when it is YYYY-MM-DD, a 400 answer otherwise.
+fn one_day_of(given: Option<String>) -> std::result::Result<String, Response> {
+    let d = given.unwrap_or_default();
+    if d.is_empty() || (d.len() == 10 && d.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() })) {
+        Ok(d)
+    } else {
+        Err(Response::error("day must be YYYY-MM-DD", 400).expect("a 400 response builds"))
+    }
+}
+
+pub(crate) async fn read_api(req: &Request, url: &Url, env: &Env) -> Result<Response> {
+    let secret = match env.secret("READ_TOKEN") {
+        Ok(t) => t.to_string(),
+        Err(_) => return Response::error("the read token is not set", 503),
+    };
+    let given = req.headers().get("authorization")?.unwrap_or_default();
+    let given = given.strip_prefix("Bearer ").unwrap_or("");
+    if secret.is_empty() || !same(given, &secret) {
+        return Response::error("send the read token as: Authorization: Bearer <token>", 401);
+    }
+    let q = |k: &str| url.query_pairs().find(|(a, _)| a == k).map(|(_, v)| v.to_string());
+    let db = db_of(&env)?;
+    match url.path() {
+        "/api/v1/counts" => {
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let from = day_before(days - 1);
+            let edge = db
+                .prepare("SELECT path, kind, ref, referrer_host, audience, operator, product, SUM(n) AS n FROM hits WHERE day >= ?1 GROUP BY path, kind, ref, referrer_host, audience, operator, product ORDER BY n DESC")
+                .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
+            let beacon = db
+                .prepare("SELECT path, ref, referrer_host, SUM(n) AS n FROM visits WHERE day >= ?1 GROUP BY path, ref, referrer_host ORDER BY n DESC")
+                .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
+            // The same reports with the day kept, so a reader can say how many people came on a day.
+            let beacon_by_day = db
+                .prepare("SELECT day, path, ref, referrer_host, n FROM visits WHERE day >= ?1 ORDER BY day DESC, n DESC")
+                .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
+            Response::from_json(&serde_json::json!({
+                "from": from,
+                "note": "edge: every counted request, by who asked (audience). beacon: pages whose JavaScript ran, so a person; a person is also in edge as unconfirmed-browser. beacon_by_day: the same reports, one row per day",
+                "edge": edge, "beacon": beacon, "beacon_by_day": beacon_by_day
+            }))
+        }
+        "/api/v1/hits" => {
+            // ?days=N gives every row from that many days back, so a reader sees whole days; a 1,000-row cap alone
+            // hid everything older than ~3 days on mackenziebowes.com (2026-10-22). Without days: the newest rows, as before.
+            let days: Option<i64> = q("days").and_then(|v| v.parse().ok()).map(|d: i64| d.clamp(1, 365));
+            let limit: i64 = q("limit").and_then(|v| v.parse().ok()).unwrap_or(if days.is_some() { 50_000 } else { 100 }).clamp(1, 50_000);
+            let from = days.map_or_else(|| "0000-00-00".to_string(), |d| day_before(d - 1));
+            let rows = db
+                .prepare("SELECT day, path, kind, ref, referrer_host, audience, operator, product, n FROM hits WHERE day >= ?1 ORDER BY day DESC, n DESC LIMIT ?2")
+                .bind(&[s(&from), JsValue::from_f64(limit as f64)])?.all().await?.results::<serde_json::Value>()?;
+            let truncated = rows.len() as i64 == limit;
+            Response::from_json(&serde_json::json!({ "from": from, "truncated": truncated, "hits": rows }))
+        }
+        "/api/v1/internal" => {
+            // ?days=N: which page of this site sent people to which, a row per day (Vancouver days), page and source page.
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let from = day_before(days - 1);
+            let rows = db
+                .prepare("SELECT day, path, from_path, n FROM internal_hits WHERE day >= ?1 ORDER BY day DESC, n DESC LIMIT 50000")
+                .bind(&[s(&from)])?.all().await?.results::<serde_json::Value>()?;
+            let truncated = rows.len() == 50_000;
+            Response::from_json(&serde_json::json!({ "from": from, "truncated": truncated, "internal": rows, "note": "a counted page request whose Referer was another page of this site: the page it came from, no query, no person" }))
+        }
+        "/api/v1/views" => {
+            // ?day=YYYY-MM-DD gives that one Vancouver day (pagebook's daily pull, #4322); otherwise the last `days` days.
+            // At the 5,000-row cap the answer says truncated: true, so a reader does not take a cut for the whole.
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let one_day = match one_day_of(q("day")) { Ok(d) => d, Err(bad) => return Ok(bad) };
+            let from = if one_day.is_empty() { day_before(days - 1) } else { one_day.clone() };
+            let views = db
+                .prepare("SELECT * FROM views WHERE (CASE WHEN ?2 = '' THEN day >= ?1 ELSE day = ?2 END) ORDER BY at DESC LIMIT 5000")
+                .bind(&[s(&from), s(&one_day)])?.all().await?.results::<serde_json::Value>()?;
+            let truncated = views.len() == 5000;
+            Response::from_json(&serde_json::json!({ "from": from, "truncated": truncated, "note": "one row per page view whose script ran; ip, visitor and place are empty for EU, EEA and UK visitors; visitor = sha256(salt, ip, user agent)", "views": views }))
+        }
+        "/api/v1/links" => {
+            // ?day=YYYY-MM-DD (required): what each view did with links to pages of this site, one row per view,
+            // component and area, so a reader can tell a click from a crawler's and a nav link from one in the text (#4322).
+            // Nothing new is collected: these are the component_events rows, with the view id kept.
+            let one_day = match one_day_of(q("day")) { Ok(d) => d, Err(bad) => return Ok(bad) };
+            if one_day.is_empty() {
+                return Response::error("day must be YYYY-MM-DD", 400);
+            }
+            let rows = db
+                .prepare("SELECT view, path, component, area, kind, n FROM component_events WHERE day = ?1 AND component LIKE 'link:/%' ORDER BY view, component, area, kind LIMIT 50000")
+                .bind(&[s(&one_day)])?.all().await?.results::<serde_json::Value>()?;
+            let truncated = rows.len() == 50_000;
+            Response::from_json(&serde_json::json!({ "day": one_day, "truncated": truncated, "links": rows, "note": "component events whose component is link:/<path>: the page the link was on (path), where on it (area), seen or clicked, and how many times, one row per view" }))
+        }
+        "/api/v1/components" => {
+            // per component: views that showed it, views that acted on it, and the counts, so seen 900 / clicked 9 reads off one row
+            // ?day=YYYY-MM-DD gives that one Vancouver day (pagebook's daily pull, #2185); otherwise the last `days` days summed.
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let one_day = match one_day_of(q("day")) { Ok(d) => d, Err(bad) => return Ok(bad) };
+            let from = if one_day.is_empty() { day_before(days - 1) } else { one_day.clone() };
+            let path = q("path").unwrap_or_default();
+            let rows = db
+                .prepare("SELECT ?3 AS day, path, component, area, section, kind, COUNT(DISTINCT view) AS views, SUM(n) AS n, SUM(ms) AS ms FROM component_events \
+                          WHERE (CASE WHEN ?3 = '' THEN day >= ?1 ELSE day = ?3 END) AND (?2 = '' OR path = ?2) GROUP BY path, component, area, section, kind ORDER BY path, component, kind")
+                .bind(&[s(&from), s(&path), s(&one_day)])?.all().await?.results::<serde_json::Value>()?;
+            Response::from_json(&serde_json::json!({ "from": from, "day": one_day, "note": "views: page views with that event on that component; n: how many times; ms: total time in view (seen only); day: the one day asked for, or empty for the summed range", "components": rows }))
+        }
+        "/api/v1/tools" => {
+            // one row per tool call, grouped; and the public site names that came back below the fix, for the people who look at them
+            let days: i64 = q("days").and_then(|v| v.parse().ok()).unwrap_or(7).clamp(1, 365);
+            let from = day_before(days - 1);
+            let tool = q("tool").unwrap_or_default();
+            let calls = db
+                .prepare("SELECT tool, day, verdict, outcome, turnstile, audience, COUNT(*) AS n FROM tool_events WHERE day >= ?1 AND (?2 = '' OR tool = ?2) \
+                          GROUP BY tool, day, verdict, outcome, turnstile, audience ORDER BY day DESC, tool, n DESC")
+                .bind(&[s(&from), s(&tool)])?.all().await?.results::<serde_json::Value>()?;
+            let below_fix = db
+                .prepare("SELECT tool, input, COUNT(*) AS checks, MAX(at) AS last_at FROM tool_events WHERE day >= ?1 AND (?2 = '' OR tool = ?2) AND verdict = 'below_fix' AND input != '' \
+                          GROUP BY tool, input ORDER BY last_at DESC LIMIT 500")
+                .bind(&[s(&from), s(&tool)])?.all().await?.results::<serde_json::Value>()?;
+            Response::from_json(&serde_json::json!({ "from": from, "note": "calls: tool calls by verdict, what the checked site returned (outcome), the Turnstile result and who called; below_fix: public site names the tool found below the fix", "calls": calls, "below_fix": below_fix }))
+        }
+        _ => Response::error("not found: /api/v1/counts, /api/v1/hits, /api/v1/internal, /api/v1/views, /api/v1/links, /api/v1/components or /api/v1/tools (?days=7, ?day=YYYY-MM-DD, &path=, &tool=)", 404),
+    }
+}
+
