@@ -113,12 +113,15 @@ pub fn ref_tag(raw: &str) -> String {
 /// characters and only printable ASCII; empty for any other site or anything unreadable.
 pub fn referrer_path(referer: &str, own_hosts: &[&str]) -> String {
     let rest = referer.split_once("://").map(|(_, r)| r).unwrap_or("");
-    let (host_port, tail) = rest.split_once('/').map(|(h, t)| (h, format!("/{t}"))).unwrap_or((rest, String::new()));
+    // the host ends at the first '/', '?' or '#'; a Referer of just https://host (or https://host?x) is the home page
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (host_port, tail) = rest.split_at(end);
     let host = host_port.split(':').next().unwrap_or("").to_ascii_lowercase();
     let host = host.strip_prefix("www.").unwrap_or(&host);
     if host.is_empty() || !own_hosts.contains(&host) {
         return String::new();
     }
+    let tail = if tail.starts_with('/') { tail } else { "/" };
     let path: String = tail.split(['?', '#']).next().unwrap_or("").chars().take(200).collect();
     if path.starts_with('/') && path.chars().all(|c| c.is_ascii_graphic()) { path } else { String::new() }
 }

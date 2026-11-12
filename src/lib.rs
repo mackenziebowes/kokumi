@@ -4,12 +4,14 @@ mod classify;
 mod days;
 mod page;
 mod ranges;
+mod store;
 mod tool;
 mod types;
 
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use days::day_before;
+use store::record;
 use types::*;
 use worker::wasm_bindgen::JsValue;
 use worker::*;
@@ -37,24 +39,6 @@ pub(crate) fn db_of(env: &Env) -> Result<D1Database> {
 
 pub(crate) fn s(v: &str) -> JsValue {
     JsValue::from_str(v)
-}
-
-// ---------- store ----------
-async fn record(db: &D1Database, h: &Hit) -> Result<()> {
-    db.prepare(
-        "INSERT INTO hits (day, path, kind, ref, referrer_host, audience, operator, product, n) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1) \
-         ON CONFLICT (day, path, kind, ref, referrer_host, audience, operator, product) DO UPDATE SET n = n + 1",
-    )
-    .bind(&[s(&h.day), s(&h.path), s(h.kind.name()), s(&h.ref_tag), s(&h.referrer_host), s(h.audience.name()), s(&h.operator), s(&h.product)])?
-    .run()
-    .await?;
-    if !h.referrer_path.is_empty() {
-        db.prepare("INSERT INTO internal_hits (day, path, from_path, n) VALUES (?1,?2,?3,1) ON CONFLICT (day, path, from_path) DO UPDATE SET n = n + 1")
-            .bind(&[s(&h.day), s(&h.path), s(&h.referrer_path)])?
-            .run()
-            .await?;
-    }
-    Ok(())
 }
 
 // ---------- adapters ----------
